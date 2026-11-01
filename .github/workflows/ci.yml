@@ -1,0 +1,33 @@
+# SCAL Studio - made by Merouane Hamdani for educational purposes only. MIT License.
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - name: Unit, golden, round-trip, report, pyscal cross-check and real-Streamlit AppTest
+        run: python -m pytest -q
+      - name: Batch mode from the command line (template round trip) and documentation sync
+        run: |
+          python scal_batch.py --template > batch_template.yaml
+          python scal_batch.py batch_template.yaml --engine native --out batch_out
+          python docs_content.py | diff - DOCUMENTATION.md
+          python validation.py
+      - name: JavaScript animation syntax check
+        run: |
+          python - <<'PY'
+          import re, pathlib, animation, core
+          html = animation.build_animation_html(dict(sw=[0.1,1.0], krw=[0,1], kro=[1,0]), 5.0, None)
+          js = re.search(r"<script>(.*)</script>", html, re.S).group(1)
+          pathlib.Path("anim.js").write_text(js)
+          PY
+          node --check anim.js

@@ -1,0 +1,9 @@
+streamlit>=1.36
+plotly>=5.20
+numpy>=1.26
+pandas>=2.0
+scipy>=1.11
+openpyxl>=3.1
+pyscal>=0.14   # optional: enables the native-vs-pyscal cross-check; the app runs without it
+matplotlib>=3.8   # PDF summary report
+PyYAML>=6.0   # batch mode (YAML input)
