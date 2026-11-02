@@ -25,6 +25,25 @@ def test_advisor_t_matches_direct_interpolation():
     assert cfg["cases"][0].wo.sorw == pytest.approx(ref.sorw) and cfg["cases"][0].wo.krw.n == pytest.approx(ref.krw.n)
 
 
+def test_batch_inc_records_model_and_parameters():
+    r = B.run_batch("""
+cases:
+  - name: reproducible
+    system: three-phase
+    kr_model: let
+    gas_oil: {sgcr: 0.07, krg: {L: 1.7, E: 3.2, T: 2.4}}
+    pc_multiplier: 1.4
+    pc: {gas_oil: {kind: let, pcmax: 2.3}}
+""")
+    txt = r.files["scal_eclipse.inc"].decode()
+    assert r.ok
+    assert "SGOF\n" in txt and "SWOF\n" in txt
+    assert 'go.parameters.krg.kind="let"' in txt
+    assert "go.parameters.krg.E=3.2" in txt
+    assert "go.pc.pcmax=2.3" in txt
+    assert "go.pc_scale=1.4" in txt
+
+
 def test_interpolate_between_cases_and_endpoints():
     y = """
 cases:

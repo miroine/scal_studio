@@ -242,6 +242,8 @@ system = sb.radio("Fluid system", SYSTEMS, key="system")
 kind_label = sb.radio("Kr parametrisation", ["Corey", "LET"], horizontal=True, key="kind")
 kind = kind_label.lower()
 res = sb.select_slider("Table resolution (dS)", [0.02, 0.01, 0.005], key="res")
+export_rows = sb.number_input("Export rows per table", 8, 1000, step=1, key="export_rows",
+                              help="Exact row count in downloads. Linear interpolation retains kr plateau endpoints; plots and calculations keep the dS resolution.")
 need_wo = system in (SYSTEMS[0], SYSTEMS[3])
 need_go = system in (SYSTEMS[1], SYSTEMS[3])
 need_gw = system == SYSTEMS[2]
@@ -367,6 +369,21 @@ if go_df is not None:
     base_region["go"] = go_df
 if gw_df is not None:
     base_region["gw"] = gw_df
+base_region["provenance"] = {
+    key: X.model_provenance(p, pc, resolution=res)
+    for key, p, pc in (("wo", wo_p, pc_wo), ("go", go_p, pc_go), ("gw", gw_p, pc_gw))
+    if p is not None
+}
+
+
+def wo_region(name, table, params, pc_scale=1.0, source="Derived water-oil case"):
+    reg = dict(name=name, wo=table, provenance={
+        "wo": X.model_provenance(params, pc_wo, resolution=res, pc_scale=pc_scale, source=source),
+    })
+    if go_df is not None:
+        reg["go"] = go_df
+        reg["provenance"]["go"] = base_region["provenance"]["go"]
+    return reg
 
 hyst_export = None
 region_sources = {"Base case": [base_region]}
@@ -709,9 +726,8 @@ with T["End-point scaling"]:
             st.dataframe(pd.DataFrame(fam_rows), hide_index=True, use_container_width=True)
             fam_regs = []
             for r in fam:
-                reg = {"name": f"RT{r['id']} k={r['k']:.0f}mD", "wo": r["table"]}
-                if go_df is not None:
-                    reg["go"] = go_df
+                reg = wo_region(f"RT{r['id']} k={r['k']:.0f}mD", r["table"], r["params"], r["pc_scale"],
+                                source=f"Rock-type family; log(k) parameter interpolation; k_mD={r['k']!r}; phi={r['phi']!r}")
                 fam_regs.append(reg)
             region_sources["Rock-type family (SATNUM regions)"] = fam_regs
             st.caption("The family is available as a region source on the Export tab.")
@@ -866,21 +882,23 @@ with T["Parameter advisor"]:
         st.dataframe(pd.DataFrame(rows_a).round(3), hide_index=True, use_container_width=True)
         st.caption(f"Pc multiplier at this t: {pcm:.2f} (log interpolation of {prof.pc_mult[0]} / {prof.pc_mult[1]} / {prof.pc_mult[2]}). Applied only when Pc is included in the sidebar.")
 
-        reg_i = {"name": f"Advisor interpolated t={t_a:.2f}", "wo": t_int}
-        regs3 = [{"name": nm, "wo": tabs_a[nm]} for nm in ("Low", "Base", "High")]
-        if go_df is not None:
-            reg_i["go"] = go_df
-            for r_ in regs3:
-                r_["go"] = go_df
+        reg_i = wo_region(f"Advisor interpolated t={t_a:.2f}", t_int, p_t, pcm,
+                          source=f"Advisor profile={pk}; t={t_a!r}; effective parameters from edited low/base/high table")
+        regs3 = [wo_region(nm, tabs_a[nm], pp, scale, source=f"Advisor profile={pk}; edited {nm} case")
+                 for nm, pp, scale in zip(("Low", "Base", "High"), trip, prof.pc_mult)]
         region_sources["Advisor: interpolated curve (1 region)"] = [reg_i]
         region_sources["Advisor: low / base / high (3 regions)"] = regs3
         d1, d2, d3 = st.columns(3)
-        d1.download_button("Download the interpolated curve (CSV)", show(t_int).to_csv(index=False).encode(), "advisor_curve.csv", "text/csv", key="adv_csv")
-        d2.download_button("Download the interpolated curve (Eclipse SWOF)",
-                           X.export_eclipse([dict(name=reg_i["name"], wo=t_int)], _PC_UNITS_TO_DECK[st.session_state["pc_unit"]], "SWOF/SGOF", None, None, ("oil", "water")),
+        advisor_export = X.prepare_regions([reg_i], export_rows)
+        d1.download_button("Download the interpolated curve (CSV)", show(advisor_export[0]["wo"]).to_csv(index=False).encode(), "advisor_curve.csv", "text/csv", key="adv_csv")
+        advisor_keywords = "SWOF + SGOF" if "go" in reg_i else "SWOF"
+        d2.download_button(f"Download the interpolated curve (Eclipse {advisor_keywords})",
+                           X.export_eclipse(advisor_export, _PC_UNITS_TO_DECK[st.session_state["pc_unit"]]),
                            "advisor_swof.inc", "text/plain", key="adv_swof")
         d3.button("Use the interpolated curve as the sidebar case", on_click=_apply_wo_fit, args=(p_t, kind_a, False), key="adv_apply_t")
         st.caption("The interpolated curve and the low / base / high set are also listed as region sources on the Export tab.")
+        if go_df is None:
+            st.caption("To export both SWOF and SGOF, select Three-phase (oil-water-gas) in the sidebar. Advisor changes water-oil only; gas-oil curves are carried unchanged.")
     except _AdvSkip:
         pass
     except ValueError as exc:
@@ -940,10 +958,8 @@ with T["Uncertainty"]:
             pp = ens["params"][idx]
             tb = C.wateroil(pp, res)
             tb = C.add_pc_wo(tb, pp, pc_wo, scale=float(ens["pc_mult"][idx])) if pc_on else tb.assign(PC=0.0)
-            reg = {"name": f"{label} {metric}={S.loc[idx, metric]:.3f}", "wo": tb}
-            if go_df is not None:
-                reg["go"] = go_df
-            return reg
+            return wo_region(f"{label} {metric}={S.loc[idx, metric]:.3f}", tb, pp, float(ens["pc_mult"][idx]),
+                             source=f"Uncertainty seed={e_seed}; realisation={idx}; metric={metric}; distribution={e_dist}")
 
         picks = C.pick_cases(ens, metric)
         regs, rows = [], []
@@ -1018,17 +1034,18 @@ with T["Curve-set interpolation"]:
             n_ip = st.slider("Regions to export along A to B", 2, 9, key="ip_n")
             regs_i = []
             for kk, tk in enumerate(np.linspace(0.0, 1.0, int(n_ip)), start=1):
-                reg = {"name": f"IP{kk} t={tk:.2f}", "wo": _tab(C.interpolate_wo(pA, pB, float(tk)))}
-                if go_df is not None:
-                    reg["go"] = go_df
+                params = C.interpolate_wo(pA, pB, float(tk))
+                reg = wo_region(f"IP{kk} t={tk:.2f}", _tab(params), params,
+                                source=f"Curve-set parameter interpolation A to B; t={float(tk)!r}")
                 regs_i.append(reg)
             region_sources["Interpolated curve sets (A to B regions)"] = regs_i
-            reg_now = {"name": f"Interpolated t={t_val:.2f}", "wo": tI}
-            if go_df is not None:
-                reg_now["go"] = go_df
+            reg_now = wo_region(f"Interpolated t={t_val:.2f}", tI, C.interpolate_wo(pA, pB, t_val),
+                                source=f"Curve-set parameter interpolation A to B; t={t_val!r}; driver={mode_i}")
             region_sources["Interpolated curve at the current t (1 region)"] = [reg_now]
-            st.download_button("Download the blended curve (CSV)", show(tI).to_csv(index=False).encode(), "interpolated_curve.csv", "text/csv", key="ip_csv")
-            st.download_button("Download the blended curve (Eclipse SWOF)", X.export_eclipse([dict(name=reg_now["name"], wo=tI)], _PC_UNITS_TO_DECK[st.session_state["pc_unit"]], "SWOF/SGOF", None, None, ("oil", "water")),
+            blended_export = X.prepare_regions([reg_now], export_rows)
+            st.download_button("Download the blended curve (CSV)", show(blended_export[0]["wo"]).to_csv(index=False).encode(), "interpolated_curve.csv", "text/csv", key="ip_csv")
+            blended_keywords = "SWOF + SGOF" if "go" in reg_now else "SWOF"
+            st.download_button(f"Download the blended curve (Eclipse {blended_keywords})", X.export_eclipse(blended_export, _PC_UNITS_TO_DECK[st.session_state["pc_unit"]]),
                                "interpolated_swof.inc", "text/plain", key="ip_swof")
             note("The blended curves are exported as SATNUM regions (Export tab). Switch regions in your simulator with its own mechanism "
                  "(user-defined region changes or built-in saturation-function interpolation, whose keywords differ per simulator). "
@@ -1297,8 +1314,16 @@ with T["Export and report"]:
     if hyst_export is not None:
         use_hyst = st.checkbox("Include hysteresis (imbibition gas tables + EHYSTR)", value=False)
         if use_hyst:
-            regions = [dict(r, imb_go=hyst_export["imb_go"]) if "go" in r else r for r in regions]
-    st.caption(f"{len(regions)} region(s) will be written, source: {src_name}.")
+            regions = [dict(r, imb_go=hyst_export["imb_go"], provenance={
+                **r.get("provenance", {}),
+                "imb_go": dict(drainage=base_region["provenance"]["go"], scheme=hyst_export["scheme"],
+                               s_crit=hs.s_crit, s_max=hs.s_max, s_trap_max=hs.s_trap_max,
+                               boundary_curve_points=200, pc="unchanged from base gas-oil drainage"),
+            }) if "go" in r else r for r in regions]
+    regions = X.prepare_regions(regions, export_rows)
+    st.caption(f"{len(regions)} region(s), {export_rows} rows per table; source: {src_name}.")
+    if need_wo and not need_go:
+        st.info("Water-oil produces SWOF only. Select Three-phase (oil-water-gas) in the sidebar for both SWOF and SGOF.")
 
     files: dict[str, bytes] = {}
     eclipse_txt = X.export_eclipse(regions, units, fam_choice, stone, hyst_export if use_hyst else None)
@@ -1335,7 +1360,7 @@ with T["Export and report"]:
         st.caption("Each deck is read back by an independent parser (keyword tables, *RPT blocks, MATLAB arrays) and compared "
                    "number by number with the in-app tables, including the Pc unit factor.")
     prev = st.selectbox("Preview", ["Eclipse / OPM / tNavigator / INTERSECT", "CMG IMEX / GEM", "MRST"])
-    st.code({"Eclipse / OPM / tNavigator / INTERSECT": eclipse_txt, "CMG IMEX / GEM": cmg_txt, "MRST": mrst_txt}[prev][:6000], language="text")
+    st.code({"Eclipse / OPM / tNavigator / INTERSECT": eclipse_txt, "CMG IMEX / GEM": cmg_txt, "MRST": mrst_txt}[prev], language="text")
     note("Check keyword placement and units against your simulator version before running; hysteresis keywords (EHYSTR items, "
          "CMG *HYSKR*) differ between versions and are provided as a starting template.")
 

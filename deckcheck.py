@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from core import sof3_table
-from exporters import PC_FACTOR
+from exporters import PC_FACTOR, resample_table
 
 _KW = re.compile(r"^[A-Z][A-Z0-9_]{1,7}$")
 ATOL = 6e-6      # exporters write 6 decimals
@@ -144,7 +144,14 @@ def verify_eclipse(text, regions, units="METRIC", family="SWOF/SGOF", hysteresis
         check("SGFN", exp_g)
         both = [r for r in regions if "wo" in r and "go" in r]
         if both:
-            check("SOF3", [sof3_table(r["wo"], r["go"], float(r["wo"].SW.min()))[["SO", "KROW", "KROG"]].to_numpy(float) for r in both])
+            exp_o = []
+            for r in both:
+                d = sof3_table(r["wo"], r["go"], float(r["wo"].SW.min()))
+                rows = r.get("sampling", {}).get("rows_per_table")
+                if rows is not None:
+                    d = resample_table(d, rows)
+                exp_o.append(d[["SO", "KROW", "KROG"]].to_numpy(float))
+            check("SOF3", exp_o)
     else:
         if gw:
             check("SWFN", [arr(r["gw"], ["SW", "KRW", "PC"]) for r in gw])

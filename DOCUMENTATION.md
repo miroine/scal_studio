@@ -345,6 +345,9 @@ $$ p_d=J_{entry}\,\sigma\cos\theta\,\sqrt{\phi/k} $$
 
 Eclipse-style keywords (SWOF, SGOF, SLGOF, SWFN, SGFN, SOF3, STONE1/2, EHYSTR template), CMG IMEX/GEM (*SWT, *SLT, *RPT, *KROIL), MRST arrays, CSV, XLSX and JSON.
 Pc in the files uses the chosen unit (bar, psi, kPa). Every deck is parsed back by an independent reader and compared number by number with the tables (Verify panel and batch mode).
+Select **Three-phase (oil-water-gas)** to write both SWOF and SGOF, including in the advisor and blended-curve direct INC downloads. Gas-oil curves are carried unchanged; Water-oil mode writes SWOF only.
+**Export rows per table** sets an exact count (8-1000, default 51) for Export and advisor/blended-curve downloads, including SOF3 and imbibition tables. Linear interpolation retains the saturation range and critical/residual kr plateau boundaries within that count. Plots and calculations keep their source dS resolution; more export rows do not add model accuracy. The count is saved in case JSON; batch mode keeps its YAML resolution.
+INC comments record the engine, source, full kr/Pc configuration, Pc multiplier, source dS, output settings, sampling method and row counts for each region. Derived cases use their effective parameters, not sidebar base values. Only the selected model's parameters are active (Corey n; LET L/E/T). Parameter pressures stay in bar; table pressures use the output unit. Eclipse/CMG include comments; JSON includes provenance and sampling metadata. Missing provenance is explicitly identified, not inferred.
 Hysteresis keywords differ between simulator versions: the export is a starting template.
 
 **Pc unit factors**

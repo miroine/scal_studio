@@ -43,3 +43,69 @@ def test_preset_button():
     at.button(key="preset_btn").click().run()
     assert not at.exception, at.exception
     assert at.session_state["wo_krwend"] == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize("kind", ["Corey", "LET"])
+def test_direct_downloads_include_gas_and_exact_rows(monkeypatch, kind):
+    import exporters as X
+    import deckcheck as D
+
+    written = []
+    export = X.export_eclipse
+
+    def capture(regions, *args, **kwargs):
+        txt = export(regions, *args, **kwargs)
+        written.append((regions, txt))
+        return txt
+
+    monkeypatch.setattr(X, "export_eclipse", capture)
+    at = fresh()
+    at.radio(key="system").set_value("Three-phase (oil-water-gas)")
+    at.radio(key="kind").set_value(kind)
+    at.number_input(key="export_rows").set_value(23)
+    written.clear()
+    at.run()
+    assert not at.exception, at.exception
+    direct = [(r, txt) for r, txt in written if r[0]["name"].startswith(("Advisor interpolated", "Interpolated t="))]
+    assert len(direct) == 2
+    for regions, txt in direct:
+        tabs = D.tables_from_eclipse(txt)
+        assert set(tabs) == {"SWOF", "SGOF"}
+        assert all(len(table) == 23 for ts in tabs.values() for table in ts)
+        assert all(c.ok for c in D.verify_eclipse(txt, regions))
+        assert regions[0]["provenance"]["go"]["parameters"]["krg"]["kind"] == kind.lower()
+        assert "pc_scale" in txt and "resolution_dS" in txt
+    assert any("SWOF + SGOF" in button.label for button in at.get("download_button"))
+    preview = next(block.value for block in at.code if "Saturation functions -" in block.value)
+    assert "\nSWOF\n" in preview and "\nSGOF\n" in preview
+
+    written.clear()
+    at.checkbox(key="pc_on").uncheck().run()
+    assert not at.exception, at.exception
+    assert all(r[0]["provenance"]["wo"]["pc"]["kind"] == "disabled" for r, _ in written)
+
+
+def test_derived_exports_have_effective_parameters(monkeypatch):
+    import exporters as X
+
+    written = []
+    export = X.export_eclipse
+
+    def capture(regions, *args, **kwargs):
+        written.append(regions)
+        return export(regions, *args, **kwargs)
+
+    monkeypatch.setattr(X, "export_eclipse", capture)
+    at = fresh()
+    source = next(s for s in at.selectbox if s.label.startswith("Region source"))
+    for option in source.options:
+        written.clear()
+        source.set_value(option).run()
+        assert not at.exception, at.exception
+        regions = written[-1]
+        for r in regions:
+            p = r["provenance"]["wo"]["parameters"]
+            assert r["wo"]["SW"].min() == pytest.approx(p["swl"])
+            assert r["wo"]["KRW"].max() == pytest.approx(p["krwend"])
+            assert r["wo"]["KROW"].max() == pytest.approx(p["kroend"])
+            assert len(r["wo"]) == at.session_state["export_rows"]

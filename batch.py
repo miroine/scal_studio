@@ -267,7 +267,11 @@ def load_config(text_or_dict) -> dict:
 
 # ------------------------------------------------------------------ building tables
 def _tables(spec: CaseSpec, engine: str, h: float) -> dict:
-    reg = {"name": spec.name}
+    reg = {"name": spec.name, "provenance": {
+        key: X.model_provenance(p, spec.pc.get(key), resolution=h, pc_scale=spec.pc_scale,
+                                source=spec.origin, engine=engine)
+        for key, p in (("wo", spec.wo), ("go", spec.go), ("gw", spec.gw)) if p is not None
+    }}
     if engine == "pyscal":
         import pyscal_bridge as PB
     if spec.wo is not None:

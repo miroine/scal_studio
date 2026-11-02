@@ -8,7 +8,7 @@ import core as C
 
 SYSTEMS = ["Water-oil", "Gas-oil", "Gas-water", "Three-phase (oil-water-gas)"]
 DEFAULTS = dict(
-    system=SYSTEMS[0], kind="Corey", res=0.01,
+    system=SYSTEMS[0], kind="Corey", res=0.01, export_rows=51,
     mu_w=0.5, mu_o=5.0,
     wo_swl=0.10, wo_swcr=0.10, wo_sorw=0.20, wo_krwend=0.40, wo_kroend=0.90,
     wo_krw_n=3.0, wo_kro_n=2.5, wo_krw_L=2.0, wo_krw_E=2.0, wo_krw_T=2.0, wo_kro_L=2.0, wo_kro_E=2.0, wo_kro_T=2.0,

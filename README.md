@@ -53,6 +53,8 @@ The pyscal engine builds water-oil and gas-oil curves only; the `krwmax` ramp of
 - `pyscal_bridge.py` optional native-vs-pyscal cross-check and the pyscal batch engine
 - `advisor.py` benchmark profiles and low / base / high cases, `batch.py` and `scal_batch.py` YAML batch mode, `validation.py` validation cases, `docs_content.py` documentation text and reading guides
 
+For **SWOF + SGOF**, select **Three-phase (oil-water-gas)**; the advisor's direct INC download includes both tables in this mode. **Export rows per table** controls the exact download row count while preserving kr plateau endpoints. INC files include per-region model/parameter provenance and sampling details for reproducibility; see [Simulator export and verification](DOCUMENTATION.md#export).
+
 ## Tests and CI
 ```bash
 pip install pytest && python -m pytest -q

@@ -15,20 +15,122 @@ Each "region" is a dict with optional keys:
   go  DataFrame [SG, KRG, KROG, PC]
   gw  DataFrame [SW, KRW, KRG, PC]
   name  str
+  provenance  optional per-system model parameters and source details
+  sampling  optional export sampling details (set by prepare_regions)
   imb_go  optional imbibition gas table [SG, KRG, KROG, PC] (hysteresis)
 """
 from __future__ import annotations
 
 import io
 import json
+from dataclasses import asdict
 from datetime import date
 
 import numpy as np
 import pandas as pd
 
-from core import BAR_TO_KPA, BAR_TO_PSI, sof3_table
+from core import BAR_TO_KPA, BAR_TO_PSI, GOParams, GWParams, PcParams, WOParams, sof3_table
 
 PC_FACTOR = {"METRIC": 1.0, "FIELD": BAR_TO_PSI, "SI-kPa": BAR_TO_KPA}
+
+
+def model_provenance(params: WOParams | GOParams | GWParams, pc: PcParams | None = None, *,
+                     resolution: float = 0.01, pc_scale: float = 1.0,
+                     source: str = "Explicit parameters", engine: str = "native") -> dict:
+    """Capture effective parameters, rather than potentially stale sidebar settings."""
+    return dict(engine=engine, pc_engine="native", source=source, resolution_dS=resolution, parameters=asdict(params),
+                pc=asdict(pc) if pc is not None else {"kind": "disabled", "value_bar": 0.0},
+                pc_scale=pc_scale, parameter_pressure_unit="bar")
+
+
+def resample_table(df: pd.DataFrame, rows: int, anchors: tuple[float, ...] = ()) -> pd.DataFrame:
+    """Linear table interpolation with exact row count and kr plateau boundaries retained."""
+    if isinstance(rows, bool) or not isinstance(rows, int) or rows < 2:
+        raise ValueError("Export rows must be an integer >= 2")
+    sat = df.columns[0]
+    d = df.sort_values(sat)
+    x = d[sat].to_numpy(float)
+    required = {0, len(x) - 1}
+    for col in d.columns:
+        if col.startswith("KR"):
+            changes = np.flatnonzero(np.diff(d[col].to_numpy(float)) != 0)
+            if changes.size:
+                required.update((int(changes[0]), int(changes[-1]) + 1))
+    # Model anchors avoid mistaking roundoff-sized kr tails for shifted residual endpoints.
+    knots = np.unique(np.concatenate(([x[0], x[-1]], np.round(anchors, 10)))) if anchors else x[sorted(required)]
+    if rows < len(knots):
+        raise ValueError(f"Export rows must be >= {len(knots)} to retain all saturation endpoints")
+    grid = np.linspace(x[0], x[-1], rows)
+    available = list(range(1, rows - 1))
+    for knot in knots[1:-1]:
+        idx = min(available, key=lambda i: abs(grid[i] - knot))
+        grid[idx] = knot
+        available.remove(idx)
+    grid.sort()
+    return pd.DataFrame({col: grid if col == sat else np.interp(grid, x, d[col]) for col in d.columns})
+
+
+def prepare_regions(regions, rows: int) -> list[dict]:
+    """Prepare a separate export copy; plotted/analysed tables remain unchanged."""
+    result = []
+    for r in regions:
+        d = dict(r)
+        for key in ("wo", "go", "gw", "imb_go"):
+            if key in r:
+                p = r.get("provenance", {}).get(key, {}).get("parameters")
+                anchors = ()
+                if p:
+                    if key == "wo":
+                        anchors = (p["swl"], p["swcr"], 1.0 - p["sorw"], 1.0)
+                    elif key == "go":
+                        anchors = (0.0, p["sgcr"], 1.0 - p["swl"] - p["sorg"], 1.0 - p["swl"])
+                    elif key == "gw":
+                        anchors = (p["swl"], 1.0 - p["sgr"], 1.0 - p["sgcr"], 1.0)
+                d[key] = resample_table(r[key], rows, anchors)
+        d["sampling"] = dict(rows_per_table=rows, method="linear interpolation of source tables",
+                             grid="linspace with nearest interior slots replaced by model endpoints or kr plateau boundaries")
+        result.append(d)
+    return result
+
+
+def region_sof3(r) -> pd.DataFrame:
+    d = sof3_table(r["wo"], r["go"], float(r["wo"].SW.min()))
+    rows = r.get("sampling", {}).get("rows_per_table")
+    return resample_table(d, rows) if rows is not None else d
+
+
+def _comment_lines(values: dict, prefix: str = "") -> list[str]:
+    lines = []
+    for key, value in values.items():
+        name = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            lines.extend(_comment_lines(value, name))
+        else:
+            lines.append(f"{name}={json.dumps(value, ensure_ascii=True)}")
+    return lines
+
+
+def _provenance_comments(regions, comment="--") -> str:
+    lines = [f"{comment} Reproducibility: kr uses Corey (x^n) or LET (x^L / (x^L + E*(1-x)^T)).",
+             f"{comment} Saturation normalization: SCAL Studio core.wateroil/gasoil/gaswater (pyscal conventions).",
+             f"{comment} Full parameter configurations follow; only parameters of the selected model are active.",
+             f"{comment} Saturations and kr are dimensionless; model Pc parameters below are in bar.",
+             f"{comment} Pc values in numeric tables are converted to the declared output units.",
+             f"{comment} Numeric table values are rounded to 6 decimal places."]
+    for i, r in enumerate(regions, 1):
+        name = json.dumps(r.get("name", ""), ensure_ascii=True)
+        lines.append(f"{comment} Region {i}: {name}")
+        provenance = r.get("provenance")
+        if provenance:
+            lines.extend(f"{comment} R{i}.{line}" for line in _comment_lines(provenance))
+        else:
+            lines.append(f"{comment} R{i}: source tables supplied without model parameters; no model inferred.")
+        if "sampling" in r:
+            lines.extend(f"{comment} R{i}.sampling.{line}" for line in _comment_lines(r["sampling"]))
+        for key in ("wo", "go", "gw", "imb_go"):
+            if key in r:
+                lines.append(f"{comment} R{i}.{key}.rows={len(r[key])}")
+    return "\n".join(lines) + "\n"
 
 
 def _rows(df: pd.DataFrame, cols, pcf: float = 1.0, prec: int = 6) -> str:
@@ -61,6 +163,8 @@ def export_eclipse(regions, units="METRIC", family="SWOF/SGOF", stone="STONE2", 
     pcu = {"METRIC": "barsa", "FIELD": "psia", "SI-kPa": "kPa"}.get(units, "barsa")
     out = [_banner(f"Saturation functions - {len(regions)} region(s), Pc in {pcu}")]
     out.append("-- Load in the PROPS section. Table N corresponds to SATNUM = N.\n")
+    out.append(f"-- Export settings: family={family}; units={units}; three_phase={stone or 'none'}\n")
+    out.append(_provenance_comments(regions))
     if hysteresis:
         out.append(f"-- Hysteresis: {hysteresis['scheme']} scanning curves, Land trapping "
                    f"(max trapped Sg = {hysteresis['s_trap_max']:.3f}).\n"
@@ -115,8 +219,7 @@ def export_eclipse(regions, units="METRIC", family="SWOF/SGOF", stone="STONE2", 
         if has_go or has_gw:
             out.append(block(sgfn, "SGFN", f"Sg  Krg  Pcgo[{pcu}]", ["SG", "KRG", "PC"], "g"))
         if has_go and has_wo:
-            swl = float(min(r["wo"].SW.min() for r in regions if "wo" in r))
-            out.append(block(lambda r: sof3_table(r["wo"], r["go"], float(r["wo"].SW.min())) if "wo" in r and "go" in r else None,
+            out.append(block(lambda r: region_sof3(r) if "wo" in r and "go" in r else None,
                              "SOF3", "So  Krow  Krog", ["SO", "KROW", "KROG"], "o"))
     if has_gw and family != "SWFN/SGFN/SOF3":
         out.append("-- Gas-water system: use SWFN/SGFN (Pcgw carried in SWFN)\n")
@@ -141,6 +244,7 @@ def export_cmg(regions, units="SI-kPa", stone="STONE2") -> str:
     pcu = {"METRIC": "bar", "FIELD": "psi", "SI-kPa": "kPa"}.get(units, "kPa")
     out = [_banner("CMG IMEX / GEM rock-fluid data", "**")]
     out.append("** Place inside the *ROCKFLUID section. Table sets are numbered with *RPT.\n")
+    out.append(_provenance_comments(regions, "**"))
     for i, r in enumerate(regions, start=1):
         out.append(f"*RPT {i}   ** {r.get('name', '')}".rstrip())
         if "wo" in r:
@@ -218,6 +322,9 @@ def export_json(regions, meta: dict | None = None) -> bytes:
     payload = {"meta": meta or {}, "regions": []}
     for i, r in enumerate(regions, start=1):
         item = {"region": i, "name": r.get("name", "")}
+        for key in ("provenance", "sampling"):
+            if key in r:
+                item[key] = r[key]
         for key in ("wo", "go", "gw", "imb_go"):
             if key in r:
                 item[key] = r[key].round(8).to_dict(orient="list")

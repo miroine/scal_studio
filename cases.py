@@ -17,6 +17,7 @@ SCHEMA_VERSION = 3
 
 # (regex on key, lo, hi) - first match wins. Keep in sync with the widgets in app.py (a test enforces the defaults).
 RULES = [
+    (r"^export_rows$", 8, 1000),
     (r"^gw_swl$", 0.0, 0.6), (r"^(wo|go|sc|ip)_swl$", 0.0, 0.5),
     (r"^(wo|sc|ip)_swcr$", 0.0, 0.6), (r"^(wo|sc|ip)_sorw$", 0.0, 0.6),
     (r"^(wo|sc|ip)_krwend$", 0.02, 1.0), (r"^(wo|sc|ip)_kroend$", 0.1, 1.0),
